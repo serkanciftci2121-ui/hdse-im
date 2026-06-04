@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Merkeziyetsiz Oylama Sistemi</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Merkeziyetsiz Oylama Sistemi</h1>
+      <p>Sepolia ağı üzerinde MetaMask ile aday ekle, oy ver ve sonuçları görüntüle.</p>
+    </header>
+
+    <section class="wallet-card">
+      <button id="connectBtn">MetaMask Bağlan</button>
+      <p id="walletAddress">Cüzdan bağlı değil.</p>
+      <p id="networkStatus"></p>
+    </section>
+
+    <section class="card owner-panel">
+      <h2>Aday Ekle</h2>
+      <p class="small-text">Bu işlem sadece contract sahibi tarafından yapılabilir.</p>
+      <div class="input-group">
+        <input type="text" id="candidateName" placeholder="Aday adı giriniz" />
+        <button id="addCandidateBtn">Aday Ekle</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>Adaylar ve Sonuçlar</h2>
+        <button id="refreshBtn" class="secondary-btn">Yenile</button>
+      </div>
+      <div id="candidateList" class="candidate-list">
+        Henüz aday listesi yüklenmedi.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Oy Durumu</h2>
+      <p id="voteStatus">Oy durumunu görmek için cüzdan bağlayın.</p>
+    </section>
+
+    <p id="statusMessage"></p>
+  </div>
+
+  <script>
+    const contractAddress = "0xd31407DcfCB97BaA37f19f595BaBb8e920968159";
+
+    const contractABI = [
+      {
+        "inputs": [
+          {
+            "internalType": "string",
+            "name": "_name",
+            "type": "string"
+          }
+        ],
+        "name": "addCandidate",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+      },
+      {
+        "inputs": [],
+        "stateMutability": "nonpayable",
+        "type": "constructor"
+      },
+      {
+        "inputs": [
+          {
+            "internalType": "uint256",
+            "name": "_candidateId",
+            "type": "uint256"
+          }
+        ],
+        "name": "vote",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+      },
+      {
+        "inputs": [],
+        "name": "getCandidateCount",
+        "outputs": [
+          {
+            "internalType": "uint256",
+            "name": "",
+            "type": "uint256"
+          }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [],
+        "name": "getCandidates",
+        "outputs": [
+          {
+            "components": [
+              {
+                "internalType": "uint256",
+                "name": "id",
+                "type": "uint256"
+              },
+              {
+                "internalType": "string",
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "internalType": "uint256",
+                "name": "voteCount",
+                "type": "uint256"
+              }
+            ],
+            "internalType": "struct VotingSystem.Candidate[]",
+            "name": "",
+            "type": "tuple[]"
+          }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [
+          {
+            "internalType": "address",
+            "name": "",
+            "type": "address"
+          }
+        ],
+        "name": "hasVoted",
+        "outputs": [
+          {
+            "internalType": "bool",
+            "name": "",
+            "type": "bool"
+          }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [],
+        "name": "owner",
+        "outputs": [
+          {
+            "internalType": "address",
+            "name": "",
+            "type": "address"
+          }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      }
+    ];
+
+    let provider;
+    let signer;
+    let contract;
+    let currentAccount;
+
+    const connectBtn = document.getElementById("connectBtn");
+    const walletAddress = document.getElementById("walletAddress");
+    const networkStatus = document.getElementById("networkStatus");
+    const candidateName = document.getElementById("candidateName");
+    const addCandidateBtn = document.getElementById("addCandidateBtn");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const candidateList = document.getElementById("candidateList");
+    const voteStatus = document.getElementById("voteStatus");
+    const statusMessage = document.getElementById("statusMessage");
+
+    async function connectWallet() {
+      if (!window.ethereum) {
+        alert("MetaMask yüklü değil. Lütfen MetaMask kurun.");
+        return;
+      }
+
+      try {
+        await window.ethereum.request({ method: "eth_requestAccounts" });
+        provider = new ethers.providers.Web3Provider(window.ethereum);
+        signer = provider.getSigner();
+        currentAccount = await signer.getAddress();
+        contract = new ethers.Contract(contractAddress, contractABI, signer);
+
+        const network = await provider.getNetwork();
+        if (network.chainId !== 11155111) {
+          networkStatus.innerText = "Lütfen MetaMask ağını Sepolia olarak değiştirin.";
+          networkStatus.className = "error";
+        } else {
+          networkStatus.innerText = "Sepolia ağına bağlısınız.";
+          networkStatus.className = "success";
+        }
+
+        connectBtn.innerText = "Cüzdan Bağlandı";
+        walletAddress.innerText = "Cüzdan: " + shortenAddress(currentAccount);
+        statusMessage.innerText = "";
+
+        await loadCandidates();
+        await checkVoteStatus();
+      } catch (error) {
+        console.error(error);
+        statusMessage.innerText = "Cüzdan bağlantısı başarısız.";
+      }
+    }
+
+    async function addCandidate() {
+      if (!contract) {
+        alert("Önce MetaMask'a bağlanın.");
+        return;
+      }
+
+      const name = candidateName.value.trim();
+      if (name === "") {
+        alert("Lütfen aday adı girin.");
+        return;
+      }
+
+      try {
+        statusMessage.innerText = "Aday ekleme işlemi gönderiliyor...";
+        const tx = await contract.addCandidate(name);
+        await tx.wait();
+
+        statusMessage.innerText = "Aday başarıyla eklendi.";
+        candidateName.value = "";
+        await loadCandidates();
+      } catch (error) {
+        console.error(error);
+        statusMessage.innerText = "Aday eklenemedi. Sadece contract sahibi aday ekleyebilir.";
+      }
+    }
+
+    async function loadCandidates() {
+      if (!contract) {
+        candidateList.innerHTML = "Adayları görmek için cüzdan bağlayın.";
+        return;
+      }
+
+      try {
+        const candidates = await contract.getCandidates();
+
+        if (candidates.length === 0) {
+          candidateList.innerHTML = "Henüz aday eklenmemiş.";
+          return;
+        }
+
+        let totalVotes = candidates.reduce((sum, item) => {
+          return sum + Number(item.voteCount.toString());
+        }, 0);
+
+        candidateList.innerHTML = "";
+
+        candidates.forEach((candidate) => {
+          const voteCount = Number(candidate.voteCount.toString());
+          const percentage = totalVotes === 0 ? 0 : Math.round((voteCount / totalVotes) * 100);
+
+          const div = document.createElement("div");
+          div.className = "candidate-card";
+          div.innerHTML = `
+            <div class="candidate-info">
+              <h3>${escapeHtml(candidate.name)}</h3>
+              <p>Oy Sayısı: <strong>${voteCount}</strong> | Oran: <strong>%${percentage}</strong></p>
+              <div class="progress-bar">
+                <div class="progress-fill" style="width: ${percentage}%"></div>
+              </div>
+            </div>
+            <button onclick="voteCandidate(${candidate.id.toString()})">Oy Ver</button>
+          `;
+          candidateList.appendChild(div);
+        });
+      } catch (error) {
+        console.error(error);
+        candidateList.innerHTML = "Adaylar yüklenemedi.";
+      }
+    }
+
+    async function voteCandidate(candidateId) {
+      if (!contract) {
+        alert("Önce MetaMask'a bağlanın.");
+        return;
+      }
+
+      try {
+        statusMessage.innerText = "Oy verme işlemi gönderiliyor...";
+        const tx = await contract.vote(candidateId);
+        await tx.wait();
+
+        statusMessage.innerText = "Oy başarıyla verildi.";
+        await loadCandidates();
+        await checkVoteStatus();
+      } catch (error) {
+        console.error(error);
+        statusMessage.innerText = "Oy verilemedi. Daha önce oy kullanmış olabilirsiniz.";
+      }
+    }
+
+    async function checkVoteStatus() {
+      if (!contract || !currentAccount) {
+        voteStatus.innerText = "Oy durumunu görmek için cüzdan bağlayın.";
+        return;
+      }
+
+      try {
+        const voted = await contract.hasVoted(currentAccount);
+        voteStatus.innerText = voted
+          ? "Bu cüzdan daha önce oy kullandı."
+          : "Bu cüzdan henüz oy kullanmadı.";
+      } catch (error) {
+        console.error(error);
+        voteStatus.innerText = "Oy durumu alınamadı.";
+      }
+    }
+
+    function shortenAddress(address) {
+      return address.slice(0, 6) + "..." + address.slice(-4);
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.innerText = text;
+      return div.innerHTML;
+    }
+
+    connectBtn.addEventListener("click", connectWallet);
+    addCandidateBtn.addEventListener("click", addCandidate);
+    refreshBtn.addEventListener("click", async () => {
+      await loadCandidates();
+      await checkVoteStatus();
+    });
+
+    if (window.ethereum) {
+      window.ethereum.on("accountsChanged", () => {
+        window.location.reload();
+      });
+
+      window.ethereum.on("chainChanged", () => {
+        window.location.reload();
+      });
+    }
+  </script>
+</body>
+</html>
